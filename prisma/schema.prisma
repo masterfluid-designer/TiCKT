@@ -1,0 +1,346 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Prisma Schema — TicketFlow SaaS Billetterie
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  ORG_ADMIN
+  ORG_AGENT
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+  COMPLETED
+}
+
+enum TicketStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  USED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum PaymentProvider {
+  KKIAPAY
+  STRIPE
+  MANUAL
+}
+
+enum NotificationChannel {
+  EMAIL
+  WHATSAPP
+  SMS
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum NotificationType {
+  TICKET_CONFIRMATION
+  TICKET_REMINDER
+  TICKET_CANCELLATION
+  PAYMENT_SUCCESS
+  PAYMENT_FAILED
+}
+
+// ─── Organization ────────────────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  email     String   @unique
+  phone     String?
+  logoUrl   String?
+  website   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime? // soft delete
+
+  // Relations
+  users  User[]
+  events Event[]
+
+  @@index([slug])
+  @@index([email])
+  @@index([isActive])
+  @@map("organizations")
+}
+
+// ─── User ────────────────────────────────────────────────────────────────────
+
+model User {
+  id             String    @id @default(uuid())
+  organizationId String
+  email          String
+  passwordHash   String
+  firstName      String
+  lastName       String
+  phone          String?
+  role           UserRole  @default(ORG_AGENT)
+  isActive       Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime? // soft delete
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+  refreshTokens RefreshToken[]
+  checkins      Checkin[]
+
+  @@unique([organizationId, email])
+  @@index([email])
+  @@index([organizationId])
+  @@index([role])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ─── Event ───────────────────────────────────────────────────────────────────
+
+model Event {
+  id             String      @id @default(uuid())
+  organizationId String
+  name           String
+  slug           String
+  description    String?
+  location       String?
+  address        String?
+  latitude       Decimal?    @db.Decimal(10, 8)
+  longitude      Decimal?    @db.Decimal(11, 8)
+  eventDate      DateTime
+  endDate        DateTime?
+  status         EventStatus @default(DRAFT)
+
+  // Thème / Personnalisation
+  primaryColor   String?
+  secondaryColor String?
+  fontFamily     String?
+  logoUrl        String?
+  bannerUrl      String?
+  coverImageUrl  String?
+
+  // Réseaux sociaux
+  facebookUrl    String?
+  instagramUrl   String?
+  twitterUrl     String?
+  websiteUrl     String?
+
+  // Metadata
+  maxCapacity    Int?
+  isPublic       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime? // soft delete
+
+  // Relations
+  organization     Organization     @relation(fields: [organizationId], references: [id])
+  ticketCategories TicketCategory[]
+  tickets          Ticket[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+  @@index([slug])
+  @@index([status])
+  @@index([eventDate])
+  @@index([isPublic, status])
+  @@map("events")
+}
+
+// ─── TicketCategory ──────────────────────────────────────────────────────────
+
+model TicketCategory {
+  id          String   @id @default(uuid())
+  eventId     String
+  name        String
+  description String?
+  price       Decimal  @db.Decimal(10, 2)
+  currency    String   @default("XOF")
+  quantity    Int
+  remaining   Int
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  saleStartAt DateTime?
+  saleEndAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  event   Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tickets Ticket[]
+
+  @@index([eventId])
+  @@index([isActive])
+  @@map("ticket_categories")
+}
+
+// ─── Ticket ──────────────────────────────────────────────────────────────────
+
+model Ticket {
+  id         String       @id @default(uuid())
+  eventId    String
+  categoryId String
+  token      String       @unique  // Format: EVT26_XXXXXXXXXX (NanoID)
+  status     TicketStatus @default(PENDING)
+
+  // Informations acheteur
+  fullname   String
+  email      String
+  phone      String
+  profession String?
+
+  // URLs générées
+  qrUrl      String?   // URL de l'image QR code
+  ticketUrl  String?   // URL de la page ticket /t/:token
+
+  // Metadata
+  metadata   Json?     // données supplémentaires flexibles
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  usedAt     DateTime?
+
+  // Relations
+  event    Event          @relation(fields: [eventId], references: [id])
+  category TicketCategory @relation(fields: [categoryId], references: [id])
+  payment  Payment?
+  checkin  Checkin?
+  notifications Notification[]
+
+  @@index([token])
+  @@index([eventId])
+  @@index([categoryId])
+  @@index([email])
+  @@index([status])
+  @@index([eventId, status])
+  @@map("tickets")
+}
+
+// ─── Payment ─────────────────────────────────────────────────────────────────
+
+model Payment {
+  id                String          @id @default(uuid())
+  ticketId          String          @unique
+  provider          PaymentProvider @default(KKIAPAY)
+  providerReference String?         // ID transaction chez le provider
+  amount            Decimal         @db.Decimal(10, 2)
+  currency          String          @default("XOF")
+  status            PaymentStatus   @default(PENDING)
+  webhookPayload    Json?           // payload brut du webhook (pour audit)
+  metadata          Json?
+  paidAt            DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+
+  @@index([ticketId])
+  @@index([status])
+  @@index([providerReference])
+  @@index([provider, status])
+  @@map("payments")
+}
+
+// ─── Checkin ─────────────────────────────────────────────────────────────────
+
+model Checkin {
+  id          String   @id @default(uuid())
+  ticketId    String   @unique  // un ticket = un seul check-in valide
+  agentId     String
+  validatedAt DateTime @default(now())
+  deviceInfo  Json?    // { userAgent, ip, deviceId }
+  notes       String?
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+  agent  User   @relation(fields: [agentId], references: [id])
+
+  @@index([ticketId])
+  @@index([agentId])
+  @@index([validatedAt])
+  @@map("checkins")
+}
+
+// ─── Notification ────────────────────────────────────────────────────────────
+
+model Notification {
+  id         String              @id @default(uuid())
+  ticketId   String
+  type       NotificationType
+  channel    NotificationChannel
+  status     NotificationStatus  @default(PENDING)
+  recipient  String              // email ou numéro de téléphone
+  subject    String?
+  content    String?
+  provider   String?             // nodemailer, twilio, etc.
+  errorMsg   String?
+  sentAt     DateTime?
+  createdAt  DateTime            @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+
+  @@index([ticketId])
+  @@index([status])
+  @@index([channel, status])
+  @@map("notifications")
+}
+
+// ─── AuditLog ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String?
+  userId         String?
+  action         String   // ex: "ticket.created", "event.published"
+  resourceType   String   // ex: "Ticket", "Event"
+  resourceId     String?
+  oldValue       Json?
+  newValue       Json?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([action])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
